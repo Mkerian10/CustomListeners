@@ -1,11 +1,18 @@
 package com.stai.concurrency;
 
+import com.stai.concurrency.item_listener.ItemGainedEvent;
+import com.stai.concurrency.item_listener.ItemListener;
+import com.stai.concurrency.item_listener.ItemLostEvent;
 import com.stai.concurrency.player_animation.LocalAnimationEvent;
 import com.stai.concurrency.player_animation.LocalAnimationListener;
+import com.stai.concurrency.skill_listener.ExperienceChangeEvent;
+import com.stai.concurrency.skill_listener.LevelChangeEvent;
+import com.stai.concurrency.skill_listener.SkillListener;
+import org.powerbot.script.rt4.ClientContext;
 
-import java.util.ArrayList;
 import java.util.EventListener;
-import java.util.List;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -22,20 +29,23 @@ public class Dispatcher{
 	 */
 	public volatile STATUS STATUS_FLAG = STATUS.UNKNOWN;
 	
-	private Dispatcher(int nThreads){
+	private Dispatcher(ClientContext ctx, int nThreads){
+		this.ctx = ctx;
 		executor = Executors.newScheduledThreadPool(nThreads);
 		this.STATUS_FLAG = STATUS.RUNNING;
 		offer(checkStatus(), 3, TimeUnit.SECONDS);
 	}
+	
+	private final ClientContext ctx;
 	
 	/**
 	 * Use this method to get the dispatcher
 	 *
 	 * @return Dispatcher object
 	 */
-	public static Dispatcher load(){
+	public static Dispatcher load(ClientContext ctx){
 		if(singleton == null){
-			singleton = new Dispatcher(0);
+			singleton = new Dispatcher(ctx, 0);
 		}
 		return singleton;
 	}
@@ -46,9 +56,9 @@ public class Dispatcher{
 	 * @param nThreads Amount of threads to use in the core thread pool
 	 * @return Dispatcher object
 	 */
-	public static Dispatcher load(int nThreads){
+	public static Dispatcher load(ClientContext ctx, int nThreads){
 		if(singleton == null){
-			singleton = new Dispatcher(nThreads);
+			singleton = new Dispatcher(ctx, nThreads);
 		}
 		return singleton;
 	}
@@ -60,7 +70,7 @@ public class Dispatcher{
 	/**
 	 * List of listeners given to this script, when events are fired they're dispersed to these
 	 */
-	private final List<EventListener> listeners = new ArrayList<>();
+	private final Set<EventListener> listeners = new HashSet<>();
 	
 	/**
 	 * Service that runnables are offered to
@@ -75,7 +85,7 @@ public class Dispatcher{
 	 * @param waitTime Time to wait in between running the runnable
 	 * @param unit Unit of time the waitTime is given in
 	 */
-	public void offer(Runnable r, long waitTime, TimeUnit unit){
+	public final void offer(Runnable r, long waitTime, TimeUnit unit){
 		executor.scheduleAtFixedRate(r, 0, waitTime, unit);
 	}
 	
@@ -85,11 +95,19 @@ public class Dispatcher{
 	 *
 	 * @param event The action event given from the runnable
 	 */
-	public void fireEvent(AbstractActionEvent<?> event){
+	public final void fireEvent(AbstractActionEvent<?> event){
 		synchronized(listeners){
-			for(EventListener l : listeners){
+			for(EventListener l: listeners){
 				if(event instanceof LocalAnimationEvent && l instanceof LocalAnimationListener){
 					((LocalAnimationListener) l).onLocalAnimationChange((LocalAnimationEvent)event);
+				}else if(event instanceof LevelChangeEvent && l instanceof SkillListener){
+					((SkillListener) l).onLevelUp((LevelChangeEvent) event);
+				}else if(event instanceof ExperienceChangeEvent && l instanceof SkillListener){
+					((SkillListener) l).onExperienceChange((ExperienceChangeEvent)event);
+				}else if(event instanceof ItemGainedEvent && l instanceof ItemListener){
+					((ItemListener) l).onItemGained((ItemGainedEvent)event);
+				}else if(event instanceof ItemLostEvent && l instanceof ItemListener){
+					((ItemListener) l).onItemLost((ItemLostEvent)event);
 				}
 			}
 		}
@@ -99,8 +117,12 @@ public class Dispatcher{
 	 * Adds a new listener to the pool of listeners
 	 * @param listener Listener given, descendant of EventListener
 	 */
-	public void addListener(EventListener listener){
+	public final void addListener(EventListener listener){
 		synchronized(listeners){
+			if(listeners.contains(listener)){
+				ctx.controller.script().log.warning("Dispatcher#addListener! Adding duplicate runnable!");
+				return;
+			}
 			listeners.add(listener);
 		}
 	}
@@ -109,7 +131,7 @@ public class Dispatcher{
 	 * Removes a listener from the pool of listeners
 	 * @param listener Listener to remove
 	 */
-	public void removeListener(EventListener listener){
+	public final void removeListener(EventListener listener){
 		synchronized(listeners){
 			listeners.remove(listener);
 		}
@@ -119,7 +141,7 @@ public class Dispatcher{
 	 * The amount of listeners in the pool
 	 * @return Amount of listeners in the pool
 	 */
-	public int listeners(){
+	public final int listeners(){
 		return listeners.size();
 	}
 	
@@ -131,6 +153,12 @@ public class Dispatcher{
 	 */
 	protected final Runnable checkStatus(){
 		return () -> {
+			if(Dispatcher.this.ctx.controller.isStopping()){
+				Dispatcher.this.STATUS_FLAG = STATUS.TERMINATED;
+			}else if(Dispatcher.this.ctx.controller.isSuspended()){
+				Dispatcher.this.STATUS_FLAG = STATUS.PAUSED;
+			}
+			
 			if(Dispatcher.this.STATUS_FLAG.equals(STATUS.TERMINATED)){
 				Dispatcher.this.executor.shutdown();
 			}else if(Dispatcher.this.STATUS_FLAG.equals(STATUS.PAUSED)){

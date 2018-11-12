@@ -23,4 +23,9 @@ public class LocalAnimationRunnable extends AbstractRunnable{
 			last = animation;
 		}
 	}
+	
+	@Override
+	public int hashCode(){
+		return 12;
+	}
 }
